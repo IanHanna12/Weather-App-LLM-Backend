@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lws_pbv_vosk Speech Recognition</title>
+    <script src="https://www.webrtc-experiment.com/RecordRTC.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .control-panel {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .status {
+            font-style: italic;
+            color: #666;
+        }
+        .result-panel {
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 4px;
+            min-height: 100px;
+        }
+        .error {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>lws_pbv_vosk Speech Recognition</h1>
+
+        <div class="control-panel">
+            <button id="connectBtn">Connect</button>
+            <button id="recordBtn" disabled>Start Recording</button>
+            <button id="stopBtn" disabled>Stop Recording</button>
+            <span class="status" id="status">Disconnected</span>
+        </div>
+
+        <div class="result-panel" id="resultPanel">
+            <p>Transcription will appear here...</p>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const connectBtn = document.getElementById('connectBtn');
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusSpan = document.getElementById('status');
+        const resultPanel = document.getElementById('resultPanel');
+
+        // WebSocket and RecordRTC variables
+        let socket;
+        let recorder;
+        let stream;
+
+        // Connect to WebSocket
+        connectBtn.addEventListener('click', connectWebSocket);
+
+        function connectWebSocket() {
+            // Use the correct backend URL - adjust this to match your FastAPI server
+            const wsUrl = 'ws://localhost:8000/ws';
+
+            statusSpan.textContent = 'Connecting...';
+
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                statusSpan.textContent = 'Connected';
+                connectBtn.disabled = true;
+                recordBtn.disabled = false;
+
+                resultPanel.innerHTML = '<p>Connected to server. Ready to record.</p>';
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'transcription') {
+                    resultPanel.innerHTML = `<p><strong>Transcription:</strong> ${data.text || 'No text recognized'}</p>`;
+                } else if (data.type === 'error') {
+                    resultPanel.innerHTML += `<p class="error">Error: ${data.message}</p>`;
+                }
+            };
+
+            socket.onclose = () => {
+                statusSpan.textContent = 'Disconnected';
+                connectBtn.disabled = false;
+                recordBtn.disabled = true;
+                stopBtn.disabled = true;
+
+                resultPanel.innerHTML += '<p>Disconnected from server.</p>';
+
+                // Clean up media stream if it exists
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+            };
+
+            socket.onerror = (error) => {
+                statusSpan.textContent = 'Error';
+                resultPanel.innerHTML += `<p class="error">WebSocket Error: ${error.message || 'Unknown error'}</p>`;
+            };
+        }
+
+        // Record audio
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+
+        async function startRecording() {
+            try {
+                // Request microphone access
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: true,
+                    video: false
+                });
+
+                // Create RecordRTC instance
+                recorder = new RecordRTC(stream, {
+                    type: 'audio',
+                    mimeType: 'audio/wav',
+                    recorderType: RecordRTC.StereoAudioRecorder,
+                    numberOfAudioChannels: 1, // mono
+                    desiredSampRate: 16000, // 16kHz sample rate for Vosk
+                    disableLogs: false
+                });
+
+                // Start recording
+                recorder.startRecording();
+
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                statusSpan.textContent = 'Recording...';
+                resultPanel.innerHTML = '<p>Recording... Speak now.</p>';
+
+            } catch (error) {
+                resultPanel.innerHTML = `<p class="error">Microphone Error: ${error.message}</p>`;
+                statusSpan.textContent = 'Error';
+                console.error('Recording error:', error);
+            }
+        }
+
+        function stopRecording() {
+            if (!recorder) return;
+
+            recorder.stopRecording(async function() {
+                try {
+                    // Get the recorded blob
+                    const blob = recorder.getBlob();
+                    console.log('Recording stopped, blob size:', blob.size);
+
+                    // Send to server
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        socket.send(await blob.arrayBuffer());
+                        resultPanel.innerHTML = '<p>Processing audio...</p>';
+                    } else {
+                        resultPanel.innerHTML = '<p class="error">WebSocket not connected</p>';
+                    }
+                } catch (error) {
+                    console.error('Error sending audio:', error);
+                    resultPanel.innerHTML = `<p class="error">Error sending audio: ${error.message}</p>`;
+                } finally {
+                    // Stop all tracks in the stream
+                    if (stream) {
+                        stream.getTracks().forEach(track => track.stop());
+                    }
+
+                    // Clean up
+                    recorder = null;
+                }
+            });
+
+            recordBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusSpan.textContent = 'Connected';
+        }
+    </script>
+</body>
+</html>
