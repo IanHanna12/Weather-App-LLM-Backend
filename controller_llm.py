@@ -11,6 +11,7 @@ from pathlib import Path
 
 load_dotenv()
 
+# Try to import Vosk, but continue if not available
 try:
     from vosk import Model, KaldiRecognizer
 
@@ -21,6 +22,7 @@ except ImportError:
 
 app = FastAPI()
 
+# Set up CORS to allow all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,9 +31,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve static files if directory exists
 if Path("tts_recordings").exists():
     app.mount("/tts_recordings", StaticFiles(directory="tts_recordings"), name="frontend")
 
+# Load Vosk model if available
 model = None
 if vosk_available:
     model_path = "model/vosk-model-small-de-zamia-0.3"
@@ -41,100 +45,90 @@ if vosk_available:
     else:
         print(f"Warning: Model path does not exist: {model_path}")
 
+# Configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:12b")
-
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
 BACKEND_API_URL = os.environ.get("BACKEND_API_URL", "https://your-backend-api.com/api/weather")
+
+
+# Simple connection manager for WebSockets
+async def send_message(message, websocket):
+    await websocket.send_json(message)
 
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.active_connections = []
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         print(f"Client connected. Total connections: {len(self.active_connections)}")
 
-    def disconnect(self, websocket: WebSocket):
+    def disconnect(self, websocket):
         self.active_connections.remove(websocket)
         print(f"Client disconnected. Remaining connections: {len(self.active_connections)}")
-
-    async def send_message(self, message: dict, websocket: WebSocket):
-        await websocket.send_json(message)
 
 
 manager = ConnectionManager()
 
 
-def process_with_ollama(text):
+# Function to analyze text with Ollama
+def analyze_text_with_ollama(text):
+    print(f"Analyzing text: {text}")
+
+    prompt = f"""
+    Extract the weather query information from this German text: '{text}'
+
+    Return ONLY a valid JSON object with this structure:
+    {{
+        "is_weather_query": true/false,
+        "location": "city_name",
+        "time_period": "today/tomorrow/week"
+    }}
+
+    If it's not a weather query, set is_weather_query to false.
+    """
+
     try:
-        print(f"\nOLLAMA RECEIVED: '{text}'")
-
-        prompt = f"""
-        Extract the weather query information from this German text: '{text}'
-
-        Return ONLY a valid JSON object with this structure:
-        {{
-            "is_weather_query": true/false,
-            "location": "city_name",
-            "time_period": "today/tomorrow/week"
-        }}
-
-        If it's not a weather query, set is_weather_query to false.
-        Examples of weather queries:
-        - "Wie ist das Wetter in Berlin heute?"
-        - "Wird es morgen in München regnen?"
-        - "Wetterbericht für Hamburg"
-        """
-
+        # Send request to Ollama
         response = requests.post(
             OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False
-            }
+            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
         )
 
-        if response.status_code == 200:
-            result = response.json()
-            response_text = result.get('response', '{}')
-            print(f"OLLAMA RESPONSE: {response_text}")
+        if response.status_code != 200:
+            print(f"Ollama error: {response.status_code}")
+            return {"is_weather_query": False}
 
-            import re
-            json_match = re.search(r'({.*})', response_text, re.DOTALL)
-            if json_match:
-                try:
-                    weather_data = json.loads(json_match.group(1))
-                    print(f"EXTRACTED DATA: {weather_data}")
-                    return weather_data
-                except json.JSONDecodeError:
-                    print(f"JSON PARSE ERROR: {response_text}")
-                    return {"is_weather_query": False}
-            else:
-                print(f"NO JSON FOUND: {response_text}")
+        # Extract JSON from response
+        result = response.json()
+        response_text = result.get('response', '{}')
+
+        # Find JSON in the response
+        import re
+        json_match = re.search(r'({.*})', response_text, re.DOTALL)
+        if json_match:
+            try:
+                weather_data = json.loads(json_match.group(1))
+                return weather_data
+            except:
                 return {"is_weather_query": False}
         else:
-            print(f"OLLAMA ERROR: {response.status_code}")
-            return {"is_weather_query": False, "error": "Ollama request failed"}
+            return {"is_weather_query": False}
+
     except Exception as e:
-        print(f"EXCEPTION: {str(e)}")
-        return {"is_weather_query": False, "error": str(e)}
+        print(f"Error with Ollama: {str(e)}")
+        return {"is_weather_query": False}
 
 
-def forward_to_backend(weather_data):
+# Function to get weather data from backend
+def get_weather_from_backend(weather_data):
+    if not weather_data.get("is_weather_query", False):
+        return {"success": False, "message": "Not a weather query"}
+
     try:
-        print(f"\nBACKEND RECEIVED: {weather_data}")
-
-        if not weather_data.get("is_weather_query", False):
-            print("NOT A WEATHER QUERY")
-            return {
-                "success": False,
-                "message": "Not a weather query",
-                "data": None
-            }
-
+        # Prepare data for backend
         payload = {
             "query_type": "weather",
             "location": weather_data.get("location", ""),
@@ -143,44 +137,32 @@ def forward_to_backend(weather_data):
             "language": "de"
         }
 
-        headers = {
-            "Content-Type": "application/json"
-        }
-
-        print(f"BACKEND REQUEST: {payload}")
+        # Send request to backend
         response = requests.post(
             BACKEND_API_URL,
             json=payload,
-            headers=headers
+            headers={"Content-Type": "application/json"}
         )
 
         if response.status_code == 200:
-            backend_response = response.json()
-            print(f"BACKEND RESPONSE: {backend_response}")
             return {
                 "success": True,
-                "message": "Successfully retrieved from backend",
-                "data": backend_response
+                "data": response.json()
             }
         else:
-            error_message = f"Backend request failed: {response.status_code}"
-            print(f"BACKEND ERROR: {error_message}")
             return {
                 "success": False,
-                "message": error_message,
-                "data": None
+                "message": f"Backend error: {response.status_code}"
             }
 
     except Exception as e:
-        error_message = f"Error forwarding to backend: {str(e)}"
-        print(f"EXCEPTION: {str(e)}")
         return {
             "success": False,
-            "message": error_message,
-            "data": None
+            "message": f"Error: {str(e)}"
         }
 
 
+# WebSocket endpoint for audio processing
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
@@ -189,28 +171,31 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive()
 
+            # Process audio data if received
             if "bytes" in data:
+                # Check if Vosk is available
                 if not vosk_available or model is None:
-                    await manager.send_message(
-                        {"type": "error", "message": "Vosk model not available"},
+                    await send_message(
+                        {"type": "error", "message": "Speech recognition not available"},
                         websocket
                     )
                     continue
 
+                # Save audio to temporary file
                 audio_data = data["bytes"]
-
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-                    temp_file_path = temp_file.name
-                    temp_file.write(audio_data)
+                temp_file_path = None
 
                 try:
+                    # Create temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
+                        temp_file_path = temp_file.name
+                        temp_file.write(audio_data)
+
+                    # Process audio with Vosk
                     wf = wave.open(temp_file_path, "rb")
-
-                    print(f"Audio file: channels={wf.getnchannels()}, width={wf.getsampwidth()}, "
-                          f"rate={wf.getframerate()}, frames={wf.getnframes()}")
-
                     rec = KaldiRecognizer(model, wf.getframerate())
 
+                    # Transcribe audio
                     result = ""
                     while True:
                         data_chunk = wf.readframes(4000)
@@ -224,61 +209,59 @@ async def websocket_endpoint(websocket: WebSocket):
                     result += final_result.get("text", "")
                     transcribed_text = result.strip()
 
-                    await manager.send_message(
+                    # Send transcription to client
+                    await send_message(
                         {"type": "transcription", "text": transcribed_text},
                         websocket
                     )
 
+                    # If no text was recognized, send error
                     if not transcribed_text:
-                        await manager.send_message(
+                        await send_message(
                             {"type": "transcription", "text": "Keine Sprache erkannt. Bitte versuchen Sie es erneut."},
                             websocket
                         )
                         continue
 
-                    weather_data = process_with_ollama(transcribed_text)
-
+                    # Process text with Ollama
+                    weather_data = analyze_text_with_ollama(transcribed_text)
                     weather_data["original_query"] = transcribed_text
 
-                    backend_response = forward_to_backend(weather_data)
+                    # Get weather from backend
+                    backend_response = get_weather_from_backend(weather_data)
 
+                    # Prepare response
                     if backend_response["success"]:
                         response_text = backend_response["data"].get("response", "Keine Antwort vom Backend")
                     else:
                         response_text = f"Fehler: {backend_response['message']}"
 
-                    enhanced_transcription = f"{transcribed_text}\n\nWetterabfrage: {weather_data.get('is_weather_query')}\nOrt: {weather_data.get('location', 'nicht erkannt')}\nZeitraum: {weather_data.get('time_period', 'heute')}\n\nAntwort: {response_text}"
+                    # Send enhanced response to client
+                    result_text = f"{transcribed_text}\n\nWetterabfrage: {weather_data.get('is_weather_query')}\nOrt: {weather_data.get('location', 'nicht erkannt')}\nZeitraum: {weather_data.get('time_period', 'heute')}\n\nAntwort: {response_text}"
 
-                    await manager.send_message(
-                        {"type": "transcription", "text": enhanced_transcription},
+                    await send_message(
+                        {"type": "transcription", "text": result_text},
                         websocket
                     )
 
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    await manager.send_message(
-                        {"type": "error", "message": f"Error processing audio: {str(e)}"},
+                    await send_message(
+                        {"type": "error", "message": f"Error: {str(e)}"},
                         websocket
                     )
                 finally:
-                    if os.path.exists(temp_file_path):
+                    # Clean up temporary file
+                    if temp_file_path and os.path.exists(temp_file_path):
                         os.unlink(temp_file_path)
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
         print(f"WebSocket error: {str(e)}")
-        try:
-            await manager.send_message(
-                {"type": "error", "message": f"WebSocket error: {str(e)}"},
-                websocket
-            )
-        except:
-            pass
         manager.disconnect(websocket)
 
 
+# Basic routes
 @app.get("/")
 async def root():
     return {"message": "Voice Weather API is running. Open /tts_recordings/frontend.html to use the app."}
@@ -286,25 +269,20 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    ollama_status = "unknown"
-    backend_status = "unknown"
-
+    # Check Ollama status
     try:
         response = requests.get("http://localhost:11434/api/tags")
         if response.status_code == 200:
-            models = response.json().get("models", [])
-            model_names = [model.get("name") for model in models]
-            if OLLAMA_MODEL in model_names or any(name.startswith("gemma") for name in model_names):
-                ollama_status = "available (Gemma model found)"
-            else:
-                ollama_status = f"available (Gemma model not found, available models: {', '.join(model_names)})"
+            ollama_status = "available"
         else:
             ollama_status = f"error: {response.status_code}"
     except Exception as e:
         ollama_status = f"error: {str(e)}"
 
+    # Check backend status
     try:
-        response = requests.get(BACKEND_API_URL.split('/api/')[0] + "/health", timeout=5)
+        backend_url = BACKEND_API_URL.split('/api/')[0] + "/health"
+        response = requests.get(backend_url, timeout=5)
         if response.status_code == 200:
             backend_status = "available"
         else:
@@ -315,9 +293,7 @@ async def health_check():
     return {
         "status": "ok",
         "vosk_available": vosk_available,
-        "model_loaded": True,
+        "model_loaded": model is not None,
         "ollama_status": ollama_status,
         "backend_status": backend_status
     }
-
-
