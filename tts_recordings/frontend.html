@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>lws_pbv_vosk Speech Recognition</title>
+    <title>Wetter Speech Recognition</title>
     <script src="https://www.webrtc-experiment.com/RecordRTC.js"></script>
     <style>
         body {
@@ -11,195 +11,448 @@
             max-width: 800px;
             margin: 0 auto;
             padding: 20px;
+            background-color: #f5f5f5;
         }
         .container {
             display: flex;
             flex-direction: column;
             gap: 20px;
-        }
-        .control-panel {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-        button {
-            padding: 10px 15px;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        button:disabled {
-            background-color: #cccccc;
-            cursor: not-allowed;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
         .status {
             font-style: italic;
             color: #666;
+            margin-bottom: 10px;
         }
         .result-panel {
             border: 1px solid #ddd;
             padding: 15px;
             border-radius: 4px;
             min-height: 100px;
+            background-color: #fafafa;
         }
         .error {
-            color: red;
+            color: #d32f2f;
             font-weight: bold;
+        }
+        .listening {
+            color: #388e3c;
+            font-weight: bold;
+        }
+        .recording {
+            color: #d32f2f;
+            font-weight: bold;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.6; }
+            100% { opacity: 1; }
+        }
+        .volume-meter {
+            height: 10px;
+            background-color: #eee;
+            border-radius: 5px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        .volume-level {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.05s ease;
+        }
+        .info-box {
+            background-color: #e8f4ff;
+            border-left: 4px solid #4285f4;
+            padding: 10px 15px;
+            margin: 10px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .examples {
+            margin-top: 10px;
+            font-style: italic;
+        }
+        .weather-result {
+            margin-top: 15px;
+            padding: 15px;
+            background-color: #f1f8e9;
+            border-radius: 4px;
+            border-left: 4px solid #7cb342;
+        }
+        .processing {
+            display: inline-block;
+            margin-left: 5px;
+        }
+        .processing:after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60% { content: '...'; }
+            80%, 100% { content: ''; }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>lws_pbv_vosk Speech Recognition</h1>
+        <h1>Wetter Speech Recognition</h1>
 
-        <div class="control-panel">
-            <button id="connectBtn">Connect</button>
-            <button id="recordBtn" disabled>Start Recording</button>
-            <button id="stopBtn" disabled>Stop Recording</button>
-            <span class="status" id="status">Disconnected</span>
+        <div class="status" id="status">Initializing...</div>
+
+        <div class="volume-meter">
+            <div class="volume-level" id="volumeLevel"></div>
+        </div>
+
+        <div class="info-box">
+            Say "<strong>Wetter</strong>" followed by a city name to get weather information.
+            <div class="examples">
+                Examples: "Wetter Heilbronn", "Wetter Berlin", "Wetter München"
+            </div>
         </div>
 
         <div class="result-panel" id="resultPanel">
-            <p>Transcription will appear here...</p>
+            <p>Listening for weather queries...</p>
         </div>
     </div>
 
     <script>
         // DOM Elements
-        const connectBtn = document.getElementById('connectBtn');
-        const recordBtn = document.getElementById('recordBtn');
-        const stopBtn = document.getElementById('stopBtn');
         const statusSpan = document.getElementById('status');
         const resultPanel = document.getElementById('resultPanel');
+        const volumeLevel = document.getElementById('volumeLevel');
 
         // WebSocket and RecordRTC variables
         let socket;
-        let recorder;
+        let recorder = null;
         let stream;
+        let isListening = false;
+        let isRecording = false;
+        let audioContext;
+        let analyser;
+        let microphone;
+        let animationFrameId;
+        let processingRequest = false;
 
-        // Connect to WebSocket
-        connectBtn.addEventListener('click', connectWebSocket);
+        // Audio settings
+        const SILENCE_THRESHOLD = 15;
+        const RECORDING_TIME = 3500; // 3.5 seconds for recording
+        const SILENCE_TIME = 1000; // 1 second of silence to stop recording early
+        let recordingTimeout = null;
+        let lastAudioLevel = 0;
+        let silenceStart = 0;
+        let recordingStartTime = 0;
+
+        // Connect to WebSocket automatically when page loads
+        document.addEventListener('DOMContentLoaded', initializeApp);
+
+        function initializeApp() {
+            connectWebSocket();
+        }
 
         function connectWebSocket() {
-            // Use the correct backend URL - adjust this to match your FastAPI server
-            const wsUrl = 'ws://localhost:8000/ws';
-
+            const wsUrl = 'ws://localhost:8001/ws';
             statusSpan.textContent = 'Connecting...';
 
             socket = new WebSocket(wsUrl);
 
             socket.onopen = () => {
                 statusSpan.textContent = 'Connected';
-                connectBtn.disabled = true;
-                recordBtn.disabled = false;
-
-                resultPanel.innerHTML = '<p>Connected to server. Ready to record.</p>';
+                resultPanel.innerHTML = '<p>Connected to server. Say "Wetter" followed by a city name.</p>';
+                initAudioProcessing();
             };
 
             socket.onmessage = (event) => {
-                const data = JSON.parse(event.data);
+                processingRequest = false;
+                try {
+                    const data = JSON.parse(event.data);
 
-                if (data.type === 'transcription') {
-                    resultPanel.innerHTML = `<p><strong>Transcription:</strong> ${data.text || 'No text recognized'}</p>`;
-                } else if (data.type === 'error') {
-                    resultPanel.innerHTML += `<p class="error">Error: ${data.message}</p>`;
+                    if (data.type === 'transcription') {
+                        const text = data.text || 'No text recognized';
+                        resultPanel.innerHTML = `<p><strong>Recognized:</strong> ${text}</p>`;
+
+                        // Check if the transcription contains "Wetter" followed by a city
+                        const weatherPattern = /wetter\s+(\w+)/i;
+                        const match = text.match(weatherPattern);
+
+                        if (match && match[1]) {
+                            const city = match[1];
+                            resultPanel.innerHTML += `<p>Detected weather query for: <strong>${city}</strong></p>`;
+                            resultPanel.innerHTML += `<p>Getting weather information<span class="processing"></span></p>`;
+                        } else {
+                            resultPanel.innerHTML += `<p>No weather query detected. Please say "Wetter" followed by a city name.</p>`;
+                            resetAudioState();
+                        }
+                    } else if (data.type === 'weather_info') {
+                        resultPanel.innerHTML = `
+                            <div class="weather-result">
+                                <h3>Weather for ${data.city}</h3>
+                                <p>${data.info}</p>
+                            </div>
+                        `;
+                        resetAudioState();
+                    } else if (data.type === 'error') {
+                        resultPanel.innerHTML += `<p class="error">Error: ${data.message}</p>`;
+                        resetAudioState();
+                    }
+                } catch (error) {
+                    console.error('Error parsing message:', error);
+                    resetAudioState();
                 }
             };
 
             socket.onclose = () => {
                 statusSpan.textContent = 'Disconnected';
-                connectBtn.disabled = false;
-                recordBtn.disabled = true;
-                stopBtn.disabled = true;
-
-                resultPanel.innerHTML += '<p>Disconnected from server.</p>';
-
-                // Clean up media stream if it exists
-                if (stream) {
-                    stream.getTracks().forEach(track => track.stop());
-                    stream = null;
-                }
+                resultPanel.innerHTML += '<p>Disconnected from server. Trying to reconnect...</p>';
+                cleanupAudio();
+                setTimeout(connectWebSocket, 3000);
             };
 
             socket.onerror = (error) => {
                 statusSpan.textContent = 'Error';
-                resultPanel.innerHTML += `<p class="error">WebSocket Error: ${error.message || 'Unknown error'}</p>`;
+                resultPanel.innerHTML += `<p class="error">WebSocket Error</p>`;
+                console.error('WebSocket error:', error);
             };
         }
 
-        // Record audio
-        recordBtn.addEventListener('click', startRecording);
-        stopBtn.addEventListener('click', stopRecording);
+        function resetAudioState() {
+            stopRecording();
+            statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
+        }
 
-        async function startRecording() {
+        async function initAudioProcessing() {
             try {
                 // Request microphone access
                 stream = await navigator.mediaDevices.getUserMedia({
-                    audio: true,
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    },
                     video: false
                 });
 
-                // Create RecordRTC instance
-                recorder = new RecordRTC(stream, {
-                    type: 'audio',
-                    mimeType: 'audio/wav',
-                    recorderType: RecordRTC.StereoAudioRecorder,
-                    numberOfAudioChannels: 1, // mono
-                    desiredSampRate: 16000, // 16kHz sample rate for Vosk
-                    disableLogs: false
-                });
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
 
-                // Start recording
-                recorder.startRecording();
+                // Connect the nodes
+                microphone.connect(analyser);
 
-                recordBtn.disabled = true;
-                stopBtn.disabled = false;
-                statusSpan.textContent = 'Recording...';
-                resultPanel.innerHTML = '<p>Recording... Speak now.</p>';
+                // Configure analyser for better performance
+                analyser.fftSize = 128; // Smaller FFT size for better performance
+                analyser.smoothingTimeConstant = 0.2;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                // Use requestAnimationFrame for smoother processing
+                function processAudio() {
+                    if (!isListening) return;
+
+                    // Get volume data
+                    analyser.getByteFrequencyData(dataArray);
+
+                    // Calculate average volume (only use lower frequencies for speech detection)
+                    let sum = 0;
+                    const relevantBins = Math.min(bufferLength, 30); // Focus on speech frequencies
+                    for (let i = 0; i < relevantBins; i++) {
+                        sum += dataArray[i];
+                    }
+                    const average = sum / relevantBins;
+
+                    // Smooth the volume level for UI
+                    lastAudioLevel = lastAudioLevel * 0.7 + average * 0.3;
+
+                    // Update volume meter with smoother animation
+                    volumeLevel.style.width = Math.min(100, lastAudioLevel * 3) + '%';
+
+                    // Check if speaking (only if not already recording)
+                    if (!isRecording && !processingRequest) {
+                        if (average > SILENCE_THRESHOLD) {
+                            console.log("Speech detected, level:", average);
+                            startRecording();
+                        }
+                    } else if (isRecording) {
+                        // Check for silence during recording to potentially end early
+                        if (average <= SILENCE_THRESHOLD) {
+                            if (silenceStart === 0) {
+                                silenceStart = Date.now();
+                            } else if (Date.now() - silenceStart > SILENCE_TIME) {
+                                // Stop recording after silence threshold
+                                stopRecording();
+                                silenceStart = 0;
+                            }
+                        } else {
+                            // Reset silence counter if sound detected again
+                            silenceStart = 0;
+                        }
+
+                        // Also check if we've been recording for too long
+                        if (Date.now() - recordingStartTime > RECORDING_TIME) {
+                            stopRecording();
+                        }
+                    }
+
+                    // Continue the loop
+                    animationFrameId = requestAnimationFrame(processAudio);
+                }
+
+                isListening = true;
+                statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
+
+                // Start the audio processing loop
+                animationFrameId = requestAnimationFrame(processAudio);
 
             } catch (error) {
                 resultPanel.innerHTML = `<p class="error">Microphone Error: ${error.message}</p>`;
                 statusSpan.textContent = 'Error';
-                console.error('Recording error:', error);
+                console.error('Microphone error:', error);
+                setTimeout(initAudioProcessing, 3000);
+            }
+        }
+
+        function cleanupAudio() {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+
+            if (analyser) {
+                analyser.disconnect();
+            }
+
+            if (microphone) {
+                microphone.disconnect();
+            }
+
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close().catch(err => console.error('Error closing audio context:', err));
+            }
+
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+
+            if (recorder) {
+                try {
+                    recorder.stopRecording();
+                } catch (e) {
+                    console.error("Error stopping recorder:", e);
+                }
+                recorder = null;
+            }
+
+            if (recordingTimeout) {
+                clearTimeout(recordingTimeout);
+                recordingTimeout = null;
+            }
+
+            isListening = false;
+            isRecording = false;
+            processingRequest = false;
+            silenceStart = 0;
+        }
+
+        function startRecording() {
+            if (isRecording || processingRequest) return;
+
+            isRecording = true;
+            recordingStartTime = Date.now();
+            silenceStart = 0;
+            statusSpan.innerHTML = '<span class="recording">Recording...</span>';
+
+            try {
+                // Create a new recorder with optimized settings
+                recorder = new RecordRTC(stream, {
+                    type: 'audio',
+                    mimeType: 'audio/wav',
+                    recorderType: RecordRTC.StereoAudioRecorder,
+                    numberOfAudioChannels: 1,
+                    desiredSampRate: 16000,
+                    disableLogs: false
+                });
+
+                recorder.startRecording();
+            } catch (error) {
+                console.error("Error starting recording:", error);
+                isRecording = false;
+                statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
             }
         }
 
         function stopRecording() {
-            if (!recorder) return;
+            if (!isRecording || !recorder) {
+                isRecording = false;
+                silenceStart = 0;
+                return;
+            }
 
-            recorder.stopRecording(async function() {
-                try {
-                    // Get the recorded blob
-                    const blob = recorder.getBlob();
-                    console.log('Recording stopped, blob size:', blob.size);
+            isRecording = false;
+            silenceStart = 0;
 
-                    // Send to server
-                    if (socket && socket.readyState === WebSocket.OPEN) {
-                        socket.send(await blob.arrayBuffer());
-                        resultPanel.innerHTML = '<p>Processing audio...</p>';
-                    } else {
-                        resultPanel.innerHTML = '<p class="error">WebSocket not connected</p>';
+            try {
+                recorder.stopRecording(function () {
+                    try {
+                        // Check if we have a valid blob
+                        const blob = recorder.getBlob();
+
+                        if (!blob) {
+                            console.error("No blob returned from recorder");
+                            statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
+                            processingRequest = false;
+                            recorder = null;
+                            return;
+                        }
+
+                        console.log('Recording stopped, blob size:', blob.size);
+
+                        // Send the audio data if we have a valid blob and open connection
+                        if (socket && socket.readyState === WebSocket.OPEN && blob.size > 1000) {
+                            processingRequest = true;
+                            statusSpan.textContent = 'Processing...';
+                            resultPanel.innerHTML = '<p>Processing audio<span class="processing"></span></p>';
+
+                            // Convert blob to ArrayBuffer and send
+                            const fileReader = new FileReader();
+                            fileReader.onload = function () {
+                                try {
+                                    socket.send(this.result);
+                                } catch (e) {
+                                    console.error("Error sending data:", e);
+                                    processingRequest = false;
+                                    statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
+                                }
+                            };
+                            fileReader.onerror = function () {
+                                console.error("FileReader error");
+                                processingRequest = false;
+                                statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
+                            };
+                            fileReader.readAsArrayBuffer(blob);
+                        } else {
+                            processingRequest = false;
+                            statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
+                        }
+                    } catch (error) {
+                        console.error("Error stopping recording:", error);
+                        processingRequest = false;
+                        statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
                     }
-                } catch (error) {
-                    console.error('Error sending audio:', error);
-                    resultPanel.innerHTML = `<p class="error">Error sending audio: ${error.message}</p>`;
-                } finally {
-                    // Stop all tracks in the stream
-                    if (stream) {
-                        stream.getTracks().forEach(track => track.stop());
-                    }
-
-                    // Clean up
                     recorder = null;
-                }
-            });
-
-            recordBtn.disabled = false;
-            stopBtn.disabled = true;
-            statusSpan.textContent = 'Connected';
+                });
+            } catch (error) {
+                console.error("Error in stopRecording:", error);
+                processingRequest = false;
+                statusSpan.innerHTML = '<span class="listening">Listening for speech...</span>';
+                recorder = null;
+            }
         }
-    </script>
+</script>
 </body>
 </html>
