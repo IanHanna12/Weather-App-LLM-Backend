@@ -92,7 +92,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                         continue
 
-                    # Use our simple rule-based extractor
+                ##use rule based extractor
                     weather_data = weather_extractor.extract(transcribed_text)
                     weather_data["original_query"] = transcribed_text
 
@@ -120,7 +120,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         os.unlink(temp_file_path)
 
             elif "text" in data:
-                # Handle text input directly (for testing without audio)
+                # Handle text input directly (for testing without audio) --> debug
                 try:
                     text_query = data["text"]
                     weather_data = weather_extractor.extract(text_query)
