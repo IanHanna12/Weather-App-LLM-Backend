@@ -6,8 +6,8 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from vosk_service import VoskService
-from extractorService import HybridExtractor
 from weather_service import WeatherService
+from extractorService import WeatherExtractor
 
 app = FastAPI()
 
@@ -23,8 +23,8 @@ if Path("tts_recordings").exists():
     app.mount("/tts_recordings", StaticFiles(directory="tts_recordings"), name="frontend")
 
 vosk_service = VoskService()
-# Use the hybrid extractor that combines Ollama and rule-based approaches
-weather_extractor = HybridExtractor(model="llama2")
+# Use the simple rule-based extractor instead of the hybrid one
+weather_extractor = WeatherExtractor()
 weather_service = WeatherService(api_url=os.environ.get("BACKEND_API_URL", "http://localhost:8080/api/weather/"))
 
 
@@ -93,7 +93,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                         continue
 
-                    # Use our hybrid extractor (Ollama + rule-based)
+                    # Use our simple rule-based extractor
                     weather_data = weather_extractor.extract(transcribed_text)
                     weather_data["original_query"] = transcribed_text
 
@@ -125,7 +125,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     text_query = data["text"]
 
-                    # Use our hybrid extractor (Ollama + rule-based)
+                    # Use our simple rule-based extractor
                     weather_data = weather_extractor.extract(text_query)
                     weather_data["original_query"] = text_query
 
@@ -165,7 +165,6 @@ async def health_check():
     return {
         "status": "ok",
         "vosk_available": vosk_service.is_available(),
-        "ollama_available": weather_extractor.ollama.is_available(),
         "backend_status": weather_service.check_status()
     }
 

@@ -6,75 +6,69 @@ import numpy as np
 import pyaudio
 import websockets
 from datetime import datetime
-from typing import Dict, Any
 
-from extractorService import WeatherExtractor
-from vosk_service import VoskService
-from weather_service import WeatherService
-
-# Create directories
 RECORDINGS_DIR = "recordings"
 TRANSCRIBE_TEXT_DIR = "transcribe_text"
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 os.makedirs(TRANSCRIBE_TEXT_DIR, exist_ok=True)
 
-# Global variables
-is_speech = False
-finish_result = True
-
-# WebSocket server configuration
+# Server settings
 WS_HOST = "localhost"
 WS_PORT = 8765
 
-# Active WebSocket connections
+# List of connected clients
 active_connections = set()
 
 
 class SpeechToTextService:
-    def __init__(self, trigger_word="hey", model_path="model/vosk-model-de-0.6-900K"):
-        print("Initializing Speech-to-Text Service")
+    def __init__(self, trigger_word="wetter", model_path="model/vosk-model-de-0.6-900K"):
+        print("Starting Speech-to-Text Service")
+
+        # Import services here to avoid circular imports
+        from vosk_service import VoskService
+        from extractorService import WeatherExtractor
+        from weather_service import WeatherService
+
+        # Initialize services
         self.vosk_service = VoskService(model_path)
         self.weather_extractor = WeatherExtractor()
         self.weather_service = WeatherService(
-            api_url=os.environ.get("BACKEND_API_URL", "https://your-backend-api.com/api/weather"))
+            api_url=os.environ.get("BACKEND_API_URL", "http://localhost:8080/api/weather/"))
 
-        # Audio configuration
+        # Audio settings
         self.FORMAT = pyaudio.paInt16
         self.CHANNELS = 1
         self.RATE = 16000
         self.CHUNK = 1024
-        self.THRESHOLD = 500  # Adjust based on your microphone sensitivity
-        self.INPUT_DEVICE_INDEX = None  # Use default input device
+        self.THRESHOLD = 500
 
-        # Initialize PyAudio
+        # Initialize audio system
         self.p = pyaudio.PyAudio()
 
-        # Recording state
+
         self.frames = []
         self.is_recording = False
         self.triggered = False
         self.trigger_word = trigger_word.lower()
 
-        # Configure silence detection
-        self.silence_threshold_seconds = 1.5
+        self.silence_seconds = 1.5
         self.frames_per_second = int(self.RATE / self.CHUNK)
-        self.silence_frames_threshold = int(self.silence_threshold_seconds * self.frames_per_second)
+        self.silence_frames = int(self.silence_seconds * self.frames_per_second)
 
-        print(f"Ready. Listening for trigger word: '{self.trigger_word}'")
+        print(f"Ready Listening for trigger word: '{self.trigger_word}'")
 
-    def initialize_stream(self):
-        """Initialize audio stream for recording"""
+    def setup_microphone(self):
+        """Set up the microphone for recording"""
         return self.p.open(
             format=self.FORMAT,
             channels=self.CHANNELS,
             rate=self.RATE,
             input=True,
-            frames_per_buffer=self.CHUNK,
-            input_device_index=self.INPUT_DEVICE_INDEX,
+            frames_per_buffer=self.CHUNK
         )
 
     def is_voice(self, data):
-        """Detect if audio chunk contains voice"""
+        """Check if audio contains voice"""
         audio_data = np.frombuffer(data, dtype=np.int16)
         return np.abs(audio_data).mean() > self.THRESHOLD
 
@@ -108,7 +102,7 @@ class SpeechToTextService:
             return False
 
     def save_frames_to_file(self, frames, filename):
-        """Save a list of audio frames to a WAV file"""
+        """Save audio frames to a file"""
         try:
             wf = wave.open(filename, 'wb')
             wf.setnchannels(self.CHANNELS)
@@ -118,14 +112,12 @@ class SpeechToTextService:
             wf.close()
             return True
         except Exception as e:
-            print(f"Error saving frames to file: {e}")
+            print(f"Error saving frames: {e}")
             return False
 
     async def detect_speech(self, stream):
         """Listen for speech and record when detected"""
-        global is_speech
-        silence_frames = 0
-        is_recording = False
+        silence_count = 0
         buffer = []
         buffer_size = 30  # About 1 second of audio
 
@@ -133,7 +125,7 @@ class SpeechToTextService:
 
         while True:
             # Read audio from microphone
-            data = await asyncio.to_thread(stream.read, self.CHUNK, exception_on_overflow=False)
+            data = await asyncio.to_thread(stream.read, self.CHUNK)
 
             # Add to buffer
             buffer.append(data)
@@ -145,8 +137,8 @@ class SpeechToTextService:
 
             # If not triggered yet, check for trigger word
             if not self.triggered:
-                if is_speech and len(buffer) >= 15:  # Check after collecting some audio
-                    # Save buffer to temporary file for transcription
+                if is_speech and len(buffer) >= 15:
+                    # Save buffer to temporary file
                     temp_file = os.path.join(RECORDINGS_DIR, "temp_trigger.wav")
                     self.save_frames_to_file(buffer, temp_file)
 
@@ -160,14 +152,14 @@ class SpeechToTextService:
                         if self.trigger_word in text:
                             print(f"Trigger word detected: '{self.trigger_word}'")
                             self.triggered = True
-                            is_recording = True
                             self.start_recording()
+
                             # Add buffer to recording
                             for frame in buffer:
                                 self.frames.append(frame)
 
-                            # Notify frontend that recording has started
-                            await self.broadcast_to_clients({
+                            # Tell clients recording started
+                            await self.send_to_all_clients({
                                 "type": "status",
                                 "message": "Recording started"
                             })
@@ -180,54 +172,55 @@ class SpeechToTextService:
 
                 if is_speech:
                     # Reset silence counter when speech detected
-                    silence_frames = 0
+                    silence_count = 0
                 else:
                     # Count silence frames
-                    silence_frames += 1
-                    if silence_frames % 10 == 0:
-                        print(f"Silence: {silence_frames}/{self.silence_frames_threshold}")
+                    silence_count += 1
+                    if silence_count % 10 == 0:
+                        print(f"Silence: {silence_count}/{self.silence_frames}")
 
                 # Stop after silence threshold reached
-                if silence_frames >= self.silence_frames_threshold:
-                    print("Silence threshold reached, stopping recording")
+                if silence_count >= self.silence_frames:
+                    print("Silence detected, stopping recording")
                     self.stop_recording()
                     self.triggered = False
 
-                    # Notify frontend that recording has stopped
-                    await self.broadcast_to_clients({
+                    # Tell clients recording stopped
+                    await self.send_to_all_clients({
                         "type": "status",
                         "message": "Recording stopped"
                     })
 
                     return
 
-    async def broadcast_to_clients(self, message):
-        """Send a message to all connected WebSocket clients"""
+    async def send_to_all_clients(self, message):
+        """Send a message to all connected clients"""
         if active_connections:
             message_json = json.dumps(message)
             await asyncio.gather(
                 *[connection.send(message_json) for connection in active_connections]
             )
-            print(f"Broadcasted message to {len(active_connections)} clients")
+            print(f"Sent message to {len(active_connections)} clients")
         else:
-            print("No clients connected to broadcast message")
+            print("No clients connected")
 
-    async def handle_websocket_connection(self, websocket, path):
-        """Handle a WebSocket connection from a client"""
+    async def handle_client_connection(self, websocket, path):
+        """Handle a client connection"""
         print(f"New client connected: {websocket.remote_address}")
         active_connections.add(websocket)
 
         try:
+            # Send welcome message
             await websocket.send(json.dumps({
                 "type": "status",
                 "message": "Connected to Speech-to-Text Service"
             }))
 
-            # Keep the connection open and handle any messages from the client
+            # Handle messages from client
             async for message in websocket:
                 try:
                     data = json.loads(message)
-                    print(f"Received message from client: {data}")
+                    print(f"Received from client: {data}")
 
                     # Handle client commands if needed
                     if data.get("command") == "set_city":
@@ -235,7 +228,7 @@ class SpeechToTextService:
                         print(f"City set to: {city}")
 
                 except json.JSONDecodeError:
-                    print(f"Received non-JSON message: {message}")
+                    print(f"Received invalid message: {message}")
 
         except websockets.exceptions.ConnectionClosed:
             print(f"Client disconnected: {websocket.remote_address}")
@@ -245,21 +238,18 @@ class SpeechToTextService:
     async def start_websocket_server(self):
         """Start the WebSocket server"""
         server = await websockets.serve(
-            self.handle_websocket_connection,
+            self.handle_client_connection,
             WS_HOST,
             WS_PORT
         )
         print(f"WebSocket server started at ws://{WS_HOST}:{WS_PORT}")
         return server
 
-    async def createText(self):
-        """Main function: record speech, convert to text, extract keywords, and send to frontend"""
-        global finish_result
-        finish_result = True
-
+    async def process_speech(self):
+        """Main function: record speech, convert to text, extract info"""
         try:
             # Initialize microphone
-            stream = self.initialize_stream()
+            stream = self.setup_microphone()
 
             try:
                 # Listen for speech
@@ -273,8 +263,8 @@ class SpeechToTextService:
                     self.save_audio(audio_file)
                     print(f"Audio saved to: {audio_file}")
 
-                    # Notify frontend that audio is being processed
-                    await self.broadcast_to_clients({
+                    # Tell clients we're processing
+                    await self.send_to_all_clients({
                         "type": "status",
                         "message": "Processing audio"
                     })
@@ -285,7 +275,7 @@ class SpeechToTextService:
                     result = self.vosk_service.transcribe_audio(audio_file)
 
                     if result.get("success") and result.get("text"):
-                        # Save transcription to file
+                        # Save transcription
                         text = result["text"]
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         filepath = os.path.join(TRANSCRIBE_TEXT_DIR, f"transcription_{timestamp}.text")
@@ -294,38 +284,37 @@ class SpeechToTextService:
                             file.write(text)
                         print(f"Transcription: '{text}'")
 
-                        # Send transcription to frontend
-                        await self.broadcast_to_clients({
+                        # Send transcription to clients
+                        await self.send_to_all_clients({
                             "type": "transcription",
                             "text": text
                         })
 
-                        # Extract keywords
+                        # Extract weather info
                         weather_data = self.weather_extractor.extract(text)
                         weather_data["original_query"] = text
                         print(f"Extracted data: {weather_data}")
 
-                        # If it's a weather query, send the extracted location to frontend
+                        # If it's a weather query, send the location
                         if weather_data["is_weather_query"]:
                             location = weather_data.get("location", "")
                             if location:
-                                await self.broadcast_to_clients({
+                                await self.send_to_all_clients({
                                     "type": "city",
                                     "city": location
                                 })
 
-                                # Also send a message to update the UI
-                                await self.broadcast_to_clients({
+                                # Update the UI
+                                await self.send_to_all_clients({
                                     "type": "message",
                                     "text": f"Stadt auf {location} gesetzt. Klicken Sie auf 'Aktualisieren', um die Wetterdaten zu laden."
                                 })
 
-                        finish_result = False
                         return filepath
                     else:
                         error_message = "Transcription failed or empty"
                         print(error_message)
-                        await self.broadcast_to_clients({
+                        await self.send_to_all_clients({
                             "type": "error",
                             "message": error_message
                         })
@@ -340,7 +329,7 @@ class SpeechToTextService:
         except Exception as e:
             error_message = f"Error: {str(e)}"
             print(error_message)
-            await self.broadcast_to_clients({
+            await self.send_to_all_clients({
                 "type": "error",
                 "message": error_message
             })
@@ -357,7 +346,7 @@ async def main():
     try:
         # Main loop - continuously listen for speech
         while True:
-            await service.createText()
+            await service.process_speech()
             # Small delay before starting the next listening cycle
             await asyncio.sleep(1)
     except KeyboardInterrupt:
