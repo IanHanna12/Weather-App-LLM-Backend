@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from vosk_service import VoskService
-from extractorService import WeatherExtractor
+from extractorService import HybridExtractor
 from weather_service import WeatherService
 
 app = FastAPI()
@@ -23,10 +23,10 @@ if Path("tts_recordings").exists():
     app.mount("/tts_recordings", StaticFiles(directory="tts_recordings"), name="frontend")
 
 vosk_service = VoskService()
-weather_extractor = WeatherExtractor()
-weather_service = WeatherService(
-    api_url=os.environ.get("BACKEND_API_URL", "http://localhost:8080/api/weather/")
-)
+# Use the hybrid extractor that combines Ollama and rule-based approaches
+weather_extractor = HybridExtractor(model="llama2")
+weather_service = WeatherService(api_url=os.environ.get("BACKEND_API_URL", "http://localhost:8080/api/weather/"))
+
 
 class ConnectionManager:
     def __init__(self):
@@ -42,7 +42,9 @@ class ConnectionManager:
     async def send_message(self, message, websocket):
         await websocket.send_json(message)
 
+
 manager = ConnectionManager()
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -91,6 +93,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                         continue
 
+                    # Use our hybrid extractor (Ollama + rule-based)
                     weather_data = weather_extractor.extract(transcribed_text)
                     weather_data["original_query"] = transcribed_text
 
@@ -117,20 +120,52 @@ async def websocket_endpoint(websocket: WebSocket):
                     if temp_file_path and os.path.exists(temp_file_path):
                         os.unlink(temp_file_path)
 
+            elif "text" in data:
+                # Handle text input directly (for testing without audio)
+                try:
+                    text_query = data["text"]
+
+                    # Use our hybrid extractor (Ollama + rule-based)
+                    weather_data = weather_extractor.extract(text_query)
+                    weather_data["original_query"] = text_query
+
+                    backend_response = weather_service.get_weather(weather_data)
+
+                    if backend_response["success"]:
+                        response_text = backend_response["data"].get("response", "Keine Antwort vom Backend")
+                    else:
+                        response_text = f"Fehler: {backend_response['message']}"
+
+                    result_text = f"{text_query}\n\nWetterabfrage: {weather_data.get('is_weather_query')}\nOrt: {weather_data.get('location', 'nicht erkannt')}\nZeitraum: {weather_data.get('time_period', 'heute')}\n\nAntwort: {response_text}"
+
+                    await manager.send_message(
+                        {"type": "transcription", "text": result_text},
+                        websocket
+                    )
+
+                except Exception as e:
+                    await manager.send_message(
+                        {"type": "error", "message": f"Error: {str(e)}"},
+                        websocket
+                    )
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception:
         manager.disconnect(websocket)
 
+
 @app.get("/")
 async def root():
     return {"message": "Voice Weather API is running"}
+
 
 @app.get("/health")
 async def health_check():
     return {
         "status": "ok",
         "vosk_available": vosk_service.is_available(),
+        "ollama_available": weather_extractor.ollama.is_available(),
         "backend_status": weather_service.check_status()
     }
 
@@ -186,4 +221,3 @@ async def weather_websocket_endpoint(websocket: WebSocket):
         print("Weather WebSocket client disconnected")
     except Exception as e:
         print(f"Unexpected error in weather WebSocket: {e}")
-

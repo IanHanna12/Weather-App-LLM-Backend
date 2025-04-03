@@ -36,8 +36,7 @@ class SpeechToTextService:
         self.vosk_service = VoskService(model_path)
         self.weather_extractor = WeatherExtractor()
         self.weather_service = WeatherService(
-            api_url=os.environ.get("BACKEND_API_URL", "https://your-backend-api.com/api/weather")
-        )
+            api_url=os.environ.get("BACKEND_API_URL", "https://your-backend-api.com/api/weather"))
 
         # Audio configuration
         self.FORMAT = pyaudio.paInt16

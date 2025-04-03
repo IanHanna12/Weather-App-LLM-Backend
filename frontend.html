@@ -122,12 +122,10 @@
     </div>
 
     <script>
-        // DOM Elements
         const statusSpan = document.getElementById('status');
         const resultPanel = document.getElementById('resultPanel');
         const volumeLevel = document.getElementById('volumeLevel');
 
-        // WebSocket and RecordRTC variables
         let socket;
         let recorder = null;
         let stream;
@@ -141,8 +139,10 @@
 
         // Audio settings
         const SILENCE_THRESHOLD = 15;
-        const RECORDING_TIME = 3500; // 3.5 seconds for recording
-        const SILENCE_TIME = 1000; // 1 second of silence to stop recording early
+
+        // 3.5 seconds for recording
+        const RECORDING_TIME = 3500;
+        const SILENCE_TIME = 1000;
         let recordingTimeout = null;
         let lastAudioLevel = 0;
         let silenceStart = 0;
@@ -227,7 +227,6 @@
 
         async function initAudioProcessing() {
             try {
-                // Request microphone access
                 stream = await navigator.mediaDevices.getUserMedia({
                     audio: {
                         echoCancellation: true,
@@ -242,16 +241,14 @@
                 analyser = audioContext.createAnalyser();
                 microphone = audioContext.createMediaStreamSource(stream);
 
-                // Connect the nodes
                 microphone.connect(analyser);
 
                 // Configure analyser for better performance
-                analyser.fftSize = 128; // Smaller FFT size for better performance
+                analyser.fftSize = 128;
                 analyser.smoothingTimeConstant = 0.2;
                 const bufferLength = analyser.frequencyBinCount;
                 const dataArray = new Uint8Array(bufferLength);
 
-                // Use requestAnimationFrame for smoother processing
                 function processAudio() {
                     if (!isListening) return;
 
@@ -260,7 +257,7 @@
 
                     // Calculate average volume (only use lower frequencies for speech detection)
                     let sum = 0;
-                    const relevantBins = Math.min(bufferLength, 30); // Focus on speech frequencies
+                    const relevantBins = Math.min(bufferLength, 30);
                     for (let i = 0; i < relevantBins; i++) {
                         sum += dataArray[i];
                     }
@@ -298,8 +295,6 @@
                             stopRecording();
                         }
                     }
-
-                    // Continue the loop
                     animationFrameId = requestAnimationFrame(processAudio);
                 }
 
