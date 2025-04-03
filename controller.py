@@ -23,7 +23,6 @@ if Path("tts_recordings").exists():
     app.mount("/tts_recordings", StaticFiles(directory="tts_recordings"), name="frontend")
 
 vosk_service = VoskService()
-# Use the simple rule-based extractor instead of the hybrid one
 weather_extractor = WeatherExtractor()
 weather_service = WeatherService(api_url=os.environ.get("BACKEND_API_URL", "http://localhost:8080/api/weather/"))
 
@@ -124,8 +123,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Handle text input directly (for testing without audio)
                 try:
                     text_query = data["text"]
-
-                    # Use our simple rule-based extractor
                     weather_data = weather_extractor.extract(text_query)
                     weather_data["original_query"] = text_query
 
@@ -159,16 +156,6 @@ async def websocket_endpoint(websocket: WebSocket):
 async def root():
     return {"message": "Voice Weather API is running"}
 
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "ok",
-        "vosk_available": vosk_service.is_available(),
-        "backend_status": weather_service.check_status()
-    }
-
-
 @app.websocket("/weather")
 async def weather_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -194,8 +181,6 @@ async def weather_websocket_endpoint(websocket: WebSocket):
                     backend_response = weather_service.get_weather(weather_data)
 
                     if backend_response["success"]:
-                        # If your backend returns data in a different format,
-                        # you might need to transform it here
                         await websocket.send_json({
                             "type": "weather_data",
                             "data": backend_response["data"]
