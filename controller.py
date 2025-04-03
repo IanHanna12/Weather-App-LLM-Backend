@@ -171,7 +171,6 @@ async def weather_websocket_endpoint(websocket: WebSocket):
                     city = data.get("city", "Heilbronn")
                     days = int(data.get("days", 5))
 
-                    # Use your existing weather service
                     weather_data = {
                         "location": city,
                         "time_period": f"{days} days",
