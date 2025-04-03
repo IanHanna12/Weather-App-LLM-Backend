@@ -92,7 +92,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                         continue
 
-                    # Use our simple rule-based extractor
                     weather_data = weather_extractor.extract(transcribed_text)
                     weather_data["original_query"] = transcribed_text
 
