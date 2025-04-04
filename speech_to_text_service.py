@@ -347,7 +347,6 @@ async def main():
         # Main loop - continuously listen for speech
         while True:
             await service.process_speech()
-            # Small delay before starting the next listening cycle
             await asyncio.sleep(1)
     except KeyboardInterrupt:
         print("Service stopped by user")

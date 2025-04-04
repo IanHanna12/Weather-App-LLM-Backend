@@ -39,7 +39,7 @@ class WeatherExtractor:
                 is_weather = True
                 break
 
-        # Wenn keine Stadt in der Liste gefunden wurde, nach Mustern suchen
+
         if location is None and is_weather:
             # Muster: "Wetter [Stadt]"
             pattern = r'wetter\s+([a-zäöüß]+)'
@@ -52,7 +52,7 @@ class WeatherExtractor:
                         potential_city not in self.week_words):
                     location = potential_city
 
-        # Zeitraum bestimmen
+       ##time
         time_period = "today"
         for word in self.tomorrow_words:
             if word in text:
