@@ -7,6 +7,10 @@ import pyaudio
 import websockets
 from datetime import datetime
 
+from vosk_service import VoskService
+from extractorService import WeatherExtractor
+from weather_service import WeatherService
+
 RECORDINGS_DIR = "recordings"
 TRANSCRIBE_TEXT_DIR = "transcribe_text"
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
@@ -21,17 +25,12 @@ active_connections = set()
 
 
 class SpeechToTextService:
-    def __init__(self, trigger_word="wetter", model_path="model/vosk-model-de-0.6-900K"):
+    def __init__(self, trigger_word="wetter"):
         print("Starting Speech-to-Text Service")
 
-        from vosk_service import VoskService
-        from extractorService import WeatherExtractor
-        from weather_service import WeatherService
-
-        self.vosk_service = VoskService(model_path)
+        self.vosk_service = VoskService()
         self.weather_extractor = WeatherExtractor()
-        self.weather_service = WeatherService(
-            api_url=os.environ.get("BACKEND_API_URL", "http://localhost:8080/api/weather/"))
+        self.weather_service = WeatherService()
 
         # Audio settings
         self.FORMAT = pyaudio.paInt16
@@ -41,7 +40,6 @@ class SpeechToTextService:
         self.THRESHOLD = 500
 
         self.p = pyaudio.PyAudio()
-
 
         self.frames = []
         self.is_recording = False
@@ -88,7 +86,6 @@ class SpeechToTextService:
 
         try:
             # Save audio to file
-
             wf = wave.open(filename, 'wb')
 
             # Set the number of channels, sample width, and frame rate

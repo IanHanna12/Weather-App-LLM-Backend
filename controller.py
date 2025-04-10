@@ -24,7 +24,7 @@ if Path("tts_recordings").exists():
 
 vosk_service = VoskService()
 weather_extractor = WeatherExtractor()
-weather_service = WeatherService(api_url=os.environ.get("BACKEND_API_URL", "http://localhost:8080/api/weather/"))
+weather_service = WeatherService()
 
 
 class ConnectionManager:
@@ -92,16 +92,17 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                         continue
 
-                ##use rule based extractor
+                    # Use rule based extractor
                     weather_data = weather_extractor.extract(transcribed_text)
                     weather_data["original_query"] = transcribed_text
 
-                    backend_response = weather_service.get_weather(weather_data)
+                    # Get weather data directly from the service
+                    weather_response = weather_service.get_weather(weather_data)
 
-                    if backend_response["success"]:
-                        response_text = backend_response["data"].get("response", "Keine Antwort vom Backend")
+                    if weather_response["success"]:
+                        response_text = weather_response["data"].get("response", "Keine Wetterinformationen verfügbar")
                     else:
-                        response_text = f"Fehler: {backend_response['message']}"
+                        response_text = f"Fehler: {weather_response.get('message', 'Unbekannter Fehler')}"
 
                     result_text = f"{transcribed_text}\n\nWetterabfrage: {weather_data.get('is_weather_query')}\nOrt: {weather_data.get('location', 'nicht erkannt')}\nZeitraum: {weather_data.get('time_period', 'heute')}\n\nAntwort: {response_text}"
 
@@ -126,12 +127,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     weather_data = weather_extractor.extract(text_query)
                     weather_data["original_query"] = text_query
 
-                    backend_response = weather_service.get_weather(weather_data)
+                    # Get weather data directly from the service
+                    weather_response = weather_service.get_weather(weather_data)
 
-                    if backend_response["success"]:
-                        response_text = backend_response["data"].get("response", "Keine Antwort vom Backend")
+                    if weather_response["success"]:
+                        response_text = weather_response["data"].get("response", "Keine Wetterinformationen verfügbar")
                     else:
-                        response_text = f"Fehler: {backend_response['message']}"
+                        response_text = f"Fehler: {weather_response.get('message', 'Unbekannter Fehler')}"
 
                     result_text = f"{text_query}\n\nWetterabfrage: {weather_data.get('is_weather_query')}\nOrt: {weather_data.get('location', 'nicht erkannt')}\nZeitraum: {weather_data.get('time_period', 'heute')}\n\nAntwort: {response_text}"
 
@@ -156,6 +158,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def root():
     return {"message": "Voice Weather API is running"}
 
+
 @app.websocket("/weather")
 async def weather_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -177,17 +180,18 @@ async def weather_websocket_endpoint(websocket: WebSocket):
                         "is_weather_query": True
                     }
 
-                    backend_response = weather_service.get_weather(weather_data)
+                    # Get weather data directly
+                    weather_response = weather_service.get_weather(weather_data)
 
-                    if backend_response["success"]:
+                    if weather_response["success"]:
                         await websocket.send_json({
                             "type": "weather_data",
-                            "data": backend_response["data"]
+                            "data": weather_response["data"]
                         })
                     else:
                         await websocket.send_json({
                             "type": "error",
-                            "message": backend_response["message"]
+                            "message": weather_response.get("message", "Fehler beim Abrufen der Wetterdaten")
                         })
                 else:
                     await websocket.send_json({

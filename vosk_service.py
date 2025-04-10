@@ -4,26 +4,41 @@ import wave
 from typing import Dict, Any
 
 try:
-    from vosk import Model, KaldiRecognizer
+    from vosk import Model, KaldiRecognizer, SetLogLevel
 
     vosk_available = True
 except ImportError:
     vosk_available = False
     print("Warning: Vosk not available")
 
+_vosk_instance = None
+
 
 class VoskService:
-    def __init__(self, model_path: str = "model/vosk-model-small-de-0.15"):
-        self.model = None
-        self.model_path = model_path
-        self.initialize_model()
+    def __init__(self, model_path="model/vosk-model-small-de-0.15"):
+        global _vosk_instance
+        if _vosk_instance is None:
+            self.model_path = model_path
+            self.model = None
+            self.initialize_model()
+            _vosk_instance = self
+        else:
+            self.model_path = _vosk_instance.model_path
+            self.model = _vosk_instance.model
 
     def initialize_model(self) -> bool:
         if not vosk_available:
             return False
         if os.path.exists(self.model_path):
-            self.model = Model(self.model_path)
-            return True
+            try:
+                # Reduce console output
+                SetLogLevel(-1)
+                self.model = Model(self.model_path)
+                print(f"Vosk model loaded from: {self.model_path}")
+                return True
+            except Exception as e:
+                print(f"Error loading Vosk model: {e}")
+                return False
         return False
 
     def is_available(self) -> bool:
