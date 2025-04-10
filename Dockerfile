@@ -1,8 +1,8 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install all dependencies including build tools
+# Install all dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     portaudio19-dev \
@@ -10,14 +10,14 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements from parent directory
-COPY ../requirements.txt .
+# Copy requirements and install
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code from parent directory
-COPY .. .
+COPY model/vosk-model-small-de-zamia-0.3/ ./model/vosk-model-de-tuda-0.6-900k/
 
-# Create directories
-RUN mkdir -p recordings transcribe_text
+COPY *.py .
+COPY recordings/ ./recordings/
+COPY transcribe_text/ ./transcribe_text/
 
 CMD ["python", "speech_to_text_service.py"]
