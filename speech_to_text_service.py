@@ -24,12 +24,10 @@ class SpeechToTextService:
     def __init__(self, trigger_word="wetter", model_path="model/vosk-model-de-0.6-900K"):
         print("Starting Speech-to-Text Service")
 
-        # Import services here to avoid circular imports
         from vosk_service import VoskService
         from extractorService import WeatherExtractor
         from weather_service import WeatherService
 
-        # Initialize services
         self.vosk_service = VoskService(model_path)
         self.weather_extractor = WeatherExtractor()
         self.weather_service = WeatherService(
@@ -42,7 +40,6 @@ class SpeechToTextService:
         self.CHUNK = 1024
         self.THRESHOLD = 500
 
-        # Initialize audio system
         self.p = pyaudio.PyAudio()
 
 
@@ -90,7 +87,11 @@ class SpeechToTextService:
             return False
 
         try:
+            # Save audio to file
+
             wf = wave.open(filename, 'wb')
+
+            # Set the number of channels, sample width, and frame rate
             wf.setnchannels(self.CHANNELS)
             wf.setsampwidth(self.p.get_sample_size(self.FORMAT))
             wf.setframerate(self.RATE)
@@ -138,7 +139,6 @@ class SpeechToTextService:
             # If not triggered yet, check for trigger word
             if not self.triggered:
                 if is_speech and len(buffer) >= 15:
-                    # Save buffer to temporary file
                     temp_file = os.path.join(RECORDINGS_DIR, "temp_trigger.wav")
                     self.save_frames_to_file(buffer, temp_file)
 
@@ -154,7 +154,6 @@ class SpeechToTextService:
                             self.triggered = True
                             self.start_recording()
 
-                            # Add buffer to recording
                             for frame in buffer:
                                 self.frames.append(frame)
 
@@ -166,15 +165,12 @@ class SpeechToTextService:
 
             # If triggered, handle recording
             elif self.triggered:
-                # Add current frame to recording
                 if self.is_recording:
                     self.frames.append(data)
 
                 if is_speech:
-                    # Reset silence counter when speech detected
                     silence_count = 0
                 else:
-                    # Count silence frames
                     silence_count += 1
                     if silence_count % 10 == 0:
                         print(f"Silence: {silence_count}/{self.silence_frames}")
@@ -185,7 +181,6 @@ class SpeechToTextService:
                     self.stop_recording()
                     self.triggered = False
 
-                    # Tell clients recording stopped
                     await self.send_to_all_clients({
                         "type": "status",
                         "message": "Recording stopped"
@@ -248,11 +243,9 @@ class SpeechToTextService:
     async def process_speech(self):
         """Main function: record speech, convert to text, extract info"""
         try:
-            # Initialize microphone
             stream = self.setup_microphone()
 
             try:
-                # Listen for speech
                 await self.detect_speech(stream)
 
                 # Save audio file
@@ -263,7 +256,7 @@ class SpeechToTextService:
                     self.save_audio(audio_file)
                     print(f"Audio saved to: {audio_file}")
 
-                    # Tell clients we're processing
+                    # processing started
                     await self.send_to_all_clients({
                         "type": "status",
                         "message": "Processing audio"
@@ -304,7 +297,6 @@ class SpeechToTextService:
                                     "city": location
                                 })
 
-                                # Update the UI
                                 await self.send_to_all_clients({
                                     "type": "message",
                                     "text": f"Stadt auf {location} gesetzt. Klicken Sie auf 'Aktualisieren', um die Wetterdaten zu laden."
@@ -322,7 +314,6 @@ class SpeechToTextService:
                 return None
 
             finally:
-                # Clean up
                 stream.stop_stream()
                 stream.close()
 
